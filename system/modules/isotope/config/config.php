@@ -216,6 +216,10 @@ if (class_exists('Mpay24\Mpay24')) {
     \Isotope\Model\Payment::registerModelType('mpay24', 'Isotope\Model\Payment\Mpay24');
 }
 
+if (class_exists(SoapClient::class)) {
+    \Isotope\Model\Payment::registerModelType('swissbilling', 'Isotope\Model\Payment\Swissbilling');
+}
+
 /**
  * Shipping methods
  */
