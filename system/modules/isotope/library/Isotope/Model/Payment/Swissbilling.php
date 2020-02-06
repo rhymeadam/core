@@ -17,6 +17,14 @@ use Isotope\Interfaces\IsotopePurchasableCollection;
 use Isotope\Isotope;
 use Isotope\Model\ProductCollection\Order;
 use Isotope\Module\Checkout;
+use Isotope\Template;
+use Terminal42\SwissbillingApi\ApiFactory;
+use Terminal42\SwissbillingApi\Client;
+use Terminal42\SwissbillingApi\Type\DateTime;
+use Terminal42\SwissbillingApi\Type\Debtor;
+use Terminal42\SwissbillingApi\Type\InvoiceItem;
+use Terminal42\SwissbillingApi\Type\Merchant;
+use Terminal42\SwissbillingApi\Type\Transaction;
 
 /**
  * SWISSBILLING payment method
@@ -55,7 +63,22 @@ class Swissbilling extends Postsale
             return false;
         }
 
-        return parent::isAvailable();
+        if (!parent::isAvailable()) {
+            return false;
+        }
+
+        // TODO add support for prescreening
+        return true;
+
+        try {
+            return $this->getClient($cart)->preScreening(
+                $this->getTransaction($cart),
+                $this->getDebtor($cart),
+                $this->getItems($cart)
+            )->isAnswered();
+        } catch (\SoapFault $e) {
+            return false;
+        }
     }
 
     /**
@@ -74,29 +97,7 @@ class Swissbilling extends Postsale
             return;
         }
 
-        $mpay24 = $this->getApiClient();
-        $status = $mpay24->paymentStatus(\Input::get('MPAYTID'));
 
-        $this->debugLog($status);
-
-        if ($status->getParam('STATUS') !== 'BILLED') {
-            \System::log('Payment for order ID "' . $objOrder->getId() . '" failed.', __METHOD__, TL_ERROR);
-
-            return;
-        }
-
-        if (!$objOrder->checkout()) {
-            \System::log('Postsale checkout for Order ID "' . \Input::post('refno') . '" failed', __METHOD__, TL_ERROR);
-
-            return;
-        }
-
-        $objOrder->setDatePaid(time());
-        $objOrder->updateOrderStatus($this->new_order_status);
-
-        $objOrder->save();
-
-        die('OK');
     }
 
     /**
@@ -117,52 +118,51 @@ class Swissbilling extends Postsale
             return false;
         }
 
-        $mpay24 = $this->getApiClient();
+        try {
+            $transaction = $this->getClient($objOrder)->request(
+                $this->getTransaction($objOrder),
+                $this->getDebtor($objOrder),
+                $this->getItems($objOrder)
+            );
 
-        $mdxi = new Mpay24Order();
-        $mdxi->Order->Tid = $objOrder->getId();
-        $mdxi->Order->Price = $objOrder->getTotal();
-        $mdxi->Order->URL->Success = \Environment::get('base') . Checkout::generateUrlForStep('complete', $objOrder);
-        $mdxi->Order->URL->Error = \Environment::get('base') . Checkout::generateUrlForStep('failed');
-        $mdxi->Order->URL->Confirmation = \Environment::get('base') . 'system/modules/isotope/postsale.php?mod=pay&id=' . $this->id;
+            $this->debugLog($transaction);
 
-        $template = new \FrontendTemplate('iso_payment_mpay24');
-        $template->setData($this->row());
-        $template->location = $mpay24->paymentPage($mdxi)->getLocation();
+            if ($transaction->hasError()) {
+                return false;
+            }
+        } catch (\SoapFault $e) {
+            $this->debugLog('EshopTransactionRequest() caused exception');
+            $this->debugLog($e);
+            return false;
+        }
 
-        return $template->parse();
-    }
+        $objTemplate = new Template('iso_payment_swissbilling');
+        $objTemplate->headline = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][0];
+        $objTemplate->message = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][1];
+        $objTemplate->link = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][2];
+        $objTemplate->url = $transaction->url;
 
-
-    private function getMerchantConfig()
-    {
-        return [
-            'id' => $this->swissbilling_id,
-            'pwd' => $this->swissbilling_pwd,
-            'success_url' => '',
-            'cancel_url' => '',
-            'error_url' => '',
-        ];
+        return $objTemplate->parse();
     }
 
     private function getTransaction(IsotopeOrderableCollection $collection)
     {
-        return [
-            'type' => 'Real',
-            'is_B2B' => (int) $this->swissbilling_b2b,
-            'eshop_ID' => $collection->getStoreId(),
-            'eshop_ref' => $collection->getId(),
-            'order_timestamp' => strtotime('Y-m-dTh-i-s'),
-            'currency' => 'CHF',
-            'amount' => $collection->getTotal(),
-            'VAT_amount' => $collection->getTaxAmount(),
-            'admin_fee_amount' => '0',
-            'delivery_fee_amount' => $collection->getShippingMethod()->getPrice($collection),
-            'vol_discount' => '0',
-            'coupon_discount_amount' => '0',
-            'phys_delivery' => '1',
-            'debtor_IP' => \Environment::get('ip'),
-        ];
+        $transaction = new Transaction();
+
+        $transaction->is_B2B = (bool) $this->swissbilling_b2b;
+        $transaction->eshop_ID = $collection->getStoreId();
+        $transaction->eshop_ref = $collection->getId();
+        $transaction->order_timestamp = new DateTime(new \DateTime());
+        $transaction->amount = $collection->getTotal();
+        $transaction->VAT_amount = 0; //$collection->getTaxAmount();
+        $transaction->admin_fee_amount = 0;
+        $transaction->delivery_fee_amount = 0; //$collection->getShippingMethod()->getPrice($collection);
+        $transaction->vol_discount = 0;
+        $transaction->coupon_discount_amount = 0;
+        $transaction->phys_delivery = true;
+        $transaction->debtor_IP = \Environment::get('ip');
+
+        return $transaction;
     }
 
     private function getDebtor(IsotopeOrderableCollection $collection)
@@ -174,28 +174,32 @@ class Swissbilling extends Postsale
             throw new \RuntimeException('Must have billing and shipping address');
         }
 
-        return [
-            'company_name' => $billingAddress->company,
-            'firstname' => $billingAddress->firstname,
-            'lastname' => $billingAddress->lastname,
-            'birthdate' => 1970-01-01,
-            'adr1' => $billingAddress->street_1,
-            'adr2' => $billingAddress->street_2,
-            'city' => $billingAddress->city,
-            'zip' => $billingAddress->postal,
-            'country' => 'CH',
-            'email' => $billingAddress->email,
-            'language' => strtoupper($GLOBALS['TL_LANGUAGE']),
-            'user_ID' => 73916,
-            'deliv_company_name' => $shippingAddress->company,
-            'deliv_firstname' => $shippingAddress->firstname,
-            'deliv_lastname' => $shippingAddress->lastname,
-            'deliv_adr1' => $shippingAddress->street_1,
-            'deliv_adr2' => $shippingAddress->street_2,
-            'deliv_city' => $shippingAddress->city,
-            'deliv_zip' => $shippingAddress->postal,
-            'deliv_country' => 'CH',
-        ];
+        $debtor = new Debtor();
+        $debtor->title = '';
+        $debtor->company_name = $billingAddress->company;
+        $debtor->firstname = $billingAddress->firstname;
+        $debtor->lastname = $billingAddress->lastname;
+        $debtor->birthdate = '1970-01-01';
+        $debtor->adr1 = $billingAddress->street_1;
+        $debtor->adr2 = $billingAddress->street_2;
+        $debtor->city = $billingAddress->city;
+        $debtor->zip = $billingAddress->postal;
+        $debtor->country = 'CH';
+        $debtor->email = $billingAddress->email;
+        $debtor->phone = $billingAddress->phone;
+        $debtor->language = strtoupper($GLOBALS['TL_LANGUAGE']);
+//        $debtor->user_ID = 73916;
+
+//            'deliv_company_name' => $shippingAddress->company,
+//            'deliv_firstname' => $shippingAddress->firstname,
+//            'deliv_lastname' => $shippingAddress->lastname,
+//            'deliv_adr1' => $shippingAddress->street_1,
+//            'deliv_adr2' => $shippingAddress->street_2,
+//            'deliv_city' => $shippingAddress->city,
+//            'deliv_zip' => $shippingAddress->postal,
+//            'deliv_country' => 'CH',
+
+        return $debtor;
     }
 
     private function getItems(IsotopeOrderableCollection $collection)
@@ -221,16 +225,33 @@ class Swissbilling extends Postsale
                 }
             }
 
-            $data[] = [
-                'desc' => $item->getName(),
-                'short_desc' => $item->getName(),
-                'quantity' => $item->quantity,
-                'unit_price' => $item->getPrice(),
-                'VAT_rate' => $vatRate,
-                'VAT_amount' => $item->getPrice() - $item->getTaxFreePrice(),
-             ];
+            $invoiceItem = new InvoiceItem();
+            $invoiceItem->desc = $item->getName();
+            $invoiceItem->short_desc = $item->getName();
+            $invoiceItem->quantity = $item->quantity;
+            $invoiceItem->unit_price = $item->getPrice();
+            $invoiceItem->VAT_rate = $vatRate;
+            $invoiceItem->VAT_amount = $item->getPrice() - $item->getTaxFreePrice();
+
+            $data[] = $invoiceItem;
         }
 
         return $data;
+    }
+
+    private function getClient(IsotopeOrderableCollection $collection): Client
+    {
+        $failedUrl = \Environment::get('base').Checkout::generateUrlForStep('failed');
+        $merchant = new Merchant(
+            $this->swissbilling_id,
+            $this->swissbilling_pwd,
+            \Environment::get('base').Checkout::generateUrlForStep('complete', $collection),
+            $failedUrl,
+            $failedUrl
+        );
+
+        $factory = new ApiFactory(!$this->debug);
+
+        return new Client($factory, $merchant);
     }
 }

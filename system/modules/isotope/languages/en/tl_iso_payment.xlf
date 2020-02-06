@@ -567,22 +567,22 @@
         <source>Please enter your SOAP password.</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_id.0">
-        <source>SWISSBILLING ID</source>
+        <source>SwissBilling ID</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_id.1">
-        <source>Please enter your SWISSBILLING ID.</source>
+        <source>Please enter your SwissBilling ID.</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_pwd.0">
         <source>Password</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_pwd.1">
-        <source>Please enter your SWISSBILLING password.</source>
+        <source>Please enter your SwissBilling password.</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_b2b.0">
         <source>Enable B2B support</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_b2b.1">
-        <source>Please check with SWISSBILLING before activating this option.</source>
+        <source>SwissBilling by default does not allow a shipping address that is different than the billing address. Please check with SwissBilling before activating this option.</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.groups.0">
         <source>Member groups</source>
