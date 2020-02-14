@@ -11,15 +11,18 @@
 
 namespace Isotope\Model\Payment;
 
+use Contao\Input;
 use Isotope\Interfaces\IsotopeOrderableCollection;
 use Isotope\Interfaces\IsotopeProductCollection;
 use Isotope\Interfaces\IsotopePurchasableCollection;
 use Isotope\Isotope;
+use Isotope\Model\Payment;
 use Isotope\Model\ProductCollection\Order;
 use Isotope\Module\Checkout;
 use Isotope\Template;
 use Terminal42\SwissbillingApi\ApiFactory;
 use Terminal42\SwissbillingApi\Client;
+use Terminal42\SwissbillingApi\Exception\SoapException;
 use Terminal42\SwissbillingApi\Type\DateTime;
 use Terminal42\SwissbillingApi\Type\Debtor;
 use Terminal42\SwissbillingApi\Type\InvoiceItem;
@@ -33,7 +36,7 @@ use Terminal42\SwissbillingApi\Type\Transaction;
  * @property string $swissbilling_pwd
  * @property bool   $swissbilling_b2b
  */
-class Swissbilling extends Postsale
+class Swissbilling extends Payment
 {
     /**
      * @inheritDoc
@@ -81,31 +84,72 @@ class Swissbilling extends Postsale
         }
     }
 
-    /**
-     * Perform server to server data check
-     *
-     * @inheritdoc
-     */
-    public function processPostsale(IsotopeProductCollection $objOrder)
+    public function processPayment(IsotopeProductCollection $objOrder, \Module $objModule)
     {
         if (!$objOrder instanceof IsotopePurchasableCollection) {
             \System::log('Product collection ID "' . $objOrder->getId() . '" is not purchasable', __METHOD__, TL_ERROR);
-            return;
+            return false;
         }
 
         if ($objOrder->isCheckoutComplete()) {
-            return;
+            return true;
         }
 
+        if (!($timestamp = Input::get('timestamp'))) {
+            return false;
+        }
 
-    }
+        $swissbilling = $this->getClient($objOrder);
 
-    /**
-     * @inheritdoc
-     */
-    public function getPostsaleOrder()
-    {
-        return Order::findByPk(\Input::get('TID'));
+        try {
+            $transaction = $swissbilling->statusRequest($objOrder->getId(), $timestamp);
+
+            if ($transaction->isAnswered() || $transaction->isAcknowledged()) {
+                if ('capture' === $this->trans_type) {
+                    $swissbilling->acknowledge($objOrder->getId(), $timestamp);
+                }
+
+                return true;
+            }
+        } catch (SoapException $exception) {
+            $this->debugLog($exception);
+            return false;
+        }
+
+        if ($objOrder->order_status > 0) {
+            unset($_SESSION['POSTSALE_TIMEOUT']);
+
+            return true;
+        }
+
+        if (!isset($_SESSION['POSTSALE_TIMEOUT'])) {
+            $_SESSION['POSTSALE_TIMEOUT'] = 12;
+        } else {
+            $_SESSION['POSTSALE_TIMEOUT'] = $_SESSION['POSTSALE_TIMEOUT'] - 1;
+        }
+
+        if ($_SESSION['POSTSALE_TIMEOUT'] > 0) {
+
+            // Reload page every 5 seconds
+            $GLOBALS['TL_HEAD'][] = '<meta http-equiv="refresh" content="5,' . \Environment::get('base') . \Environment::get('request') . '">';
+
+            // Do not index or cache the page
+            global $objPage;
+            $objPage->noSearch = 1;
+            $objPage->cache    = 0;
+
+            /** @var Template|\stdClass $objTemplate */
+            $objTemplate          = new Template('mod_message');
+            $objTemplate->type    = 'processing';
+            $objTemplate->message = $GLOBALS['TL_LANG']['MSC']['payment_processing'];
+
+            return $objTemplate->parse();
+        }
+
+        unset($_SESSION['POSTSALE_TIMEOUT']);
+        \System::log('Payment could not be processed.', __METHOD__, TL_ERROR);
+
+        return false;
     }
 
     /**
