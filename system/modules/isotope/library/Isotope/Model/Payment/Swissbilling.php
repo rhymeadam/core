@@ -17,7 +17,9 @@ use Isotope\Interfaces\IsotopeProductCollection;
 use Isotope\Interfaces\IsotopePurchasableCollection;
 use Isotope\Isotope;
 use Isotope\Model\Payment;
-use Isotope\Model\ProductCollection\Order;
+use Isotope\Model\ProductCollectionSurcharge\Payment as PaymentSurcharge;
+use Isotope\Model\ProductCollectionSurcharge\Shipping as ShippingSurcharge;
+use Isotope\Model\ProductCollectionSurcharge\Tax;
 use Isotope\Module\Checkout;
 use Isotope\Template;
 use Terminal42\SwissbillingApi\ApiFactory;
@@ -35,6 +37,7 @@ use Terminal42\SwissbillingApi\Type\Transaction;
  * @property string $swissbilling_id
  * @property string $swissbilling_pwd
  * @property bool   $swissbilling_b2b
+ * @property bool   $swissbilling_prescreening
  */
 class Swissbilling extends Payment
 {
@@ -70,18 +73,19 @@ class Swissbilling extends Payment
             return false;
         }
 
-        // TODO add support for prescreening
-        return true;
-
-        try {
-            return $this->getClient($cart)->preScreening(
-                $this->getTransaction($cart),
-                $this->getDebtor($cart),
-                $this->getItems($cart)
-            )->isAnswered();
-        } catch (\SoapFault $e) {
-            return false;
+        if ($this->swissbilling_prescreening) {
+            try {
+                return $this->getClient($cart)->preScreening(
+                    $this->getTransaction($cart),
+                    $this->getDebtor($cart),
+                    $this->getItems($cart)
+                )->isAnswered();
+            } catch (\SoapFault $e) {
+                return false;
+            }
         }
+
+        return true;
     }
 
     public function processPayment(IsotopeProductCollection $objOrder, \Module $objModule)
@@ -102,52 +106,20 @@ class Swissbilling extends Payment
         $swissbilling = $this->getClient($objOrder);
 
         try {
-            $transaction = $swissbilling->statusRequest($objOrder->getId(), $timestamp);
+            $transaction = $swissbilling->confirmation($objOrder->getId(), $timestamp);
 
             if ($transaction->isAnswered() || $transaction->isAcknowledged()) {
-                if ('capture' === $this->trans_type) {
+                if ('capture' === $this->trans_type && !$transaction->isAcknowledged()) {
                     $swissbilling->acknowledge($objOrder->getId(), $timestamp);
                 }
 
                 return true;
             }
+
+            return false;
         } catch (SoapException $exception) {
             $this->debugLog($exception);
-            return false;
         }
-
-        if ($objOrder->order_status > 0) {
-            unset($_SESSION['POSTSALE_TIMEOUT']);
-
-            return true;
-        }
-
-        if (!isset($_SESSION['POSTSALE_TIMEOUT'])) {
-            $_SESSION['POSTSALE_TIMEOUT'] = 12;
-        } else {
-            $_SESSION['POSTSALE_TIMEOUT'] = $_SESSION['POSTSALE_TIMEOUT'] - 1;
-        }
-
-        if ($_SESSION['POSTSALE_TIMEOUT'] > 0) {
-
-            // Reload page every 5 seconds
-            $GLOBALS['TL_HEAD'][] = '<meta http-equiv="refresh" content="5,' . \Environment::get('base') . \Environment::get('request') . '">';
-
-            // Do not index or cache the page
-            global $objPage;
-            $objPage->noSearch = 1;
-            $objPage->cache    = 0;
-
-            /** @var Template|\stdClass $objTemplate */
-            $objTemplate          = new Template('mod_message');
-            $objTemplate->type    = 'processing';
-            $objTemplate->message = $GLOBALS['TL_LANG']['MSC']['payment_processing'];
-
-            return $objTemplate->parse();
-        }
-
-        unset($_SESSION['POSTSALE_TIMEOUT']);
-        \System::log('Payment could not be processed.', __METHOD__, TL_ERROR);
 
         return false;
     }
@@ -191,18 +163,44 @@ class Swissbilling extends Payment
 
     private function getTransaction(IsotopeOrderableCollection $collection)
     {
-        $transaction = new Transaction();
+        $vat = 0;
+        $admin = 0;
+        $delivery = 0;
+        $discount = 0;
 
+        foreach ($collection->getSurcharges() as $surcharge) {
+            if ($surcharge->total_price < 0) {
+                $discount -= $surcharge->total_price;
+                continue;
+            }
+
+            switch (true) {
+                case $surcharge instanceof ShippingSurcharge:
+                    $delivery += $surcharge->total_price;
+                    break;
+
+                case $surcharge instanceof Tax:
+                    $vat += $surcharge->total_price;
+                    break;
+
+                case $surcharge instanceof PaymentSurcharge:
+                default:
+                    $admin += $surcharge->total_price;
+                    break;
+            }
+        }
+
+        $transaction = new Transaction();
         $transaction->is_B2B = (bool) $this->swissbilling_b2b;
         $transaction->eshop_ID = $collection->getStoreId();
         $transaction->eshop_ref = $collection->getId();
         $transaction->order_timestamp = new DateTime(new \DateTime());
         $transaction->amount = $collection->getTotal();
-        $transaction->VAT_amount = 0; //$collection->getTaxAmount();
-        $transaction->admin_fee_amount = 0;
-        $transaction->delivery_fee_amount = 0; //$collection->getShippingMethod()->getPrice($collection);
+        $transaction->VAT_amount = $vat;
+        $transaction->admin_fee_amount = $admin;
+        $transaction->delivery_fee_amount = $delivery;
         $transaction->vol_discount = 0;
-        $transaction->coupon_discount_amount = 0;
+        $transaction->coupon_discount_amount = $discount;
         $transaction->phys_delivery = true;
         $transaction->debtor_IP = \Environment::get('ip');
 
@@ -285,13 +283,14 @@ class Swissbilling extends Payment
 
     private function getClient(IsotopeOrderableCollection $collection): Client
     {
-        $failedUrl = \Environment::get('base').Checkout::generateUrlForStep('failed');
+        $returnUrl = \Environment::get('base').Checkout::generateUrlForStep('complete', $collection);
+
         $merchant = new Merchant(
             $this->swissbilling_id,
             $this->swissbilling_pwd,
-            \Environment::get('base').Checkout::generateUrlForStep('complete', $collection),
-            $failedUrl,
-            $failedUrl
+            $returnUrl,
+            $returnUrl,
+            $returnUrl
         );
 
         $factory = new ApiFactory(!$this->debug);
