@@ -12,6 +12,7 @@
 namespace Isotope\Model\Payment;
 
 use Contao\Input;
+use Haste\Util\Url;
 use Isotope\Interfaces\IsotopeOrderableCollection;
 use Isotope\Interfaces\IsotopeProductCollection;
 use Isotope\Interfaces\IsotopePurchasableCollection;
@@ -99,6 +100,7 @@ class Swissbilling extends Payment
             return true;
         }
 
+        // TODO: timestamp gibts nur wenn erfolgreich
         if (!($timestamp = Input::get('timestamp'))) {
             return false;
         }
@@ -135,15 +137,16 @@ class Swissbilling extends Payment
         }
 
         try {
-            $transaction = $this->getClient($objOrder)->request(
-                $this->getTransaction($objOrder),
+            $transaction = $this->getTransaction($objOrder);
+            $status = $this->getClient($objOrder, $transaction->order_timestamp)->request(
+                $transaction,
                 $this->getDebtor($objOrder),
                 $this->getItems($objOrder)
             );
 
-            $this->debugLog($transaction);
+            $this->debugLog($status);
 
-            if ($transaction->hasError()) {
+            if ($status->hasError()) {
                 return false;
             }
         } catch (\SoapFault $e) {
@@ -156,7 +159,7 @@ class Swissbilling extends Payment
         $objTemplate->headline = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][0];
         $objTemplate->message = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][1];
         $objTemplate->link = $GLOBALS['TL_LANG']['MSC']['pay_with_redirect'][2];
-        $objTemplate->url = $transaction->url;
+        $objTemplate->url = $status->url;
 
         return $objTemplate->parse();
     }
@@ -281,9 +284,13 @@ class Swissbilling extends Payment
         return $data;
     }
 
-    private function getClient(IsotopeOrderableCollection $collection): Client
+    private function getClient(IsotopeOrderableCollection $collection, $timestamp = null): Client
     {
         $returnUrl = \Environment::get('base').Checkout::generateUrlForStep('complete', $collection);
+
+        if ($timestamp) {
+            Url::addQueryString('timestamp='.$timestamp, $returnUrl);
+        }
 
         $merchant = new Merchant(
             $this->swissbilling_id,
