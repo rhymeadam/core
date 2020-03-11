@@ -17,6 +17,7 @@ use Isotope\Interfaces\IsotopeOrderableCollection;
 use Isotope\Interfaces\IsotopeProductCollection;
 use Isotope\Interfaces\IsotopePurchasableCollection;
 use Isotope\Isotope;
+use Isotope\Model\Address;
 use Isotope\Model\Payment;
 use Isotope\Model\ProductCollectionSurcharge\Payment as PaymentSurcharge;
 use Isotope\Model\ProductCollectionSurcharge\Shipping as ShippingSurcharge;
@@ -81,7 +82,7 @@ class Swissbilling extends Payment
                     $this->getDebtor($cart),
                     $this->getItems($cart)
                 )->isAnswered();
-            } catch (\SoapFault $e) {
+            } catch (SoapException $e) {
                 return false;
             }
         }
@@ -100,12 +101,12 @@ class Swissbilling extends Payment
             return true;
         }
 
-        // TODO: timestamp gibts nur wenn erfolgreich
         if (!($timestamp = Input::get('timestamp'))) {
             return false;
         }
 
         $swissbilling = $this->getClient($objOrder);
+        $timestamp = new DateTime(\DateTime::createFromFormat('U', $timestamp));
 
         try {
             $transaction = $swissbilling->confirmation($objOrder->getId(), $timestamp);
@@ -117,8 +118,6 @@ class Swissbilling extends Payment
 
                 return true;
             }
-
-            return false;
         } catch (SoapException $exception) {
             $this->debugLog($exception);
         }
@@ -149,7 +148,7 @@ class Swissbilling extends Payment
             if ($status->hasError()) {
                 return false;
             }
-        } catch (\SoapFault $e) {
+        } catch (SoapException $e) {
             $this->debugLog('EshopTransactionRequest() caused exception');
             $this->debugLog($e);
             return false;
@@ -213,10 +212,9 @@ class Swissbilling extends Payment
     private function getDebtor(IsotopeOrderableCollection $collection)
     {
         $billingAddress = $collection->getBillingAddress();
-        $shippingAddress = $this->swissbilling_b2b ? $collection->getShippingAddress() : $billingAddress;
 
-        if (!$billingAddress || !$shippingAddress) {
-            throw new \RuntimeException('Must have billing and shipping address');
+        if (!$billingAddress instanceof Address) {
+            throw new \RuntimeException('Invalid billing address');
         }
 
         $debtor = new Debtor();
@@ -233,16 +231,27 @@ class Swissbilling extends Payment
         $debtor->email = $billingAddress->email;
         $debtor->phone = $billingAddress->phone;
         $debtor->language = strtoupper($GLOBALS['TL_LANGUAGE']);
-//        $debtor->user_ID = 73916;
 
-//            'deliv_company_name' => $shippingAddress->company,
-//            'deliv_firstname' => $shippingAddress->firstname,
-//            'deliv_lastname' => $shippingAddress->lastname,
-//            'deliv_adr1' => $shippingAddress->street_1,
-//            'deliv_adr2' => $shippingAddress->street_2,
-//            'deliv_city' => $shippingAddress->city,
-//            'deliv_zip' => $shippingAddress->postal,
-//            'deliv_country' => 'CH',
+        if ($member = $collection->getMember()) {
+            $debtor->user_ID = $member->id;
+        }
+
+        if (!$this->swissbilling_b2b) {
+            return $debtor;
+        }
+
+        $shippingAddress = $collection->getShippingAddress();
+
+        if ($shippingAddress instanceof Address) {
+            $debtor->deliv_company_name = $shippingAddress->company;
+            $debtor->deliv_firstname = $shippingAddress->firstname;
+            $debtor->deliv_lastname = $shippingAddress->lastname;
+            $debtor->deliv_adr1 = $shippingAddress->street_1;
+            $debtor->deliv_adr2 = $shippingAddress->street_2;
+            $debtor->deliv_city = $shippingAddress->city;
+            $debtor->deliv_zip = $shippingAddress->postal;
+            $debtor->deliv_country = 'CH';
+        }
 
         return $debtor;
     }
@@ -284,7 +293,7 @@ class Swissbilling extends Payment
         return $data;
     }
 
-    private function getClient(IsotopeOrderableCollection $collection, $timestamp = null): Client
+    private function getClient(IsotopeOrderableCollection $collection, DateTime $timestamp = null): Client
     {
         $returnUrl = \Environment::get('base').Checkout::generateUrlForStep('complete', $collection);
 
