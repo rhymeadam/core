@@ -298,7 +298,7 @@ class Swissbilling extends Payment
         $returnUrl = \Environment::get('base').Checkout::generateUrlForStep('complete', $collection);
 
         if ($timestamp) {
-            Url::addQueryString('timestamp='.$timestamp, $returnUrl);
+            Url::addQueryString('timestamp='.$timestamp->getTimestamp(), $returnUrl);
         }
 
         $merchant = new Merchant(
