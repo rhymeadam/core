@@ -106,7 +106,7 @@ class Swissbilling extends Payment
         }
 
         $swissbilling = $this->getClient($objOrder);
-        $timestamp = new DateTime(\DateTime::createFromFormat('U', $timestamp));
+        $timestamp = DateTime::create($timestamp);
 
         try {
             $transaction = $swissbilling->confirmation($objOrder->getId(), $timestamp);
@@ -298,7 +298,7 @@ class Swissbilling extends Payment
         $returnUrl = \Environment::get('base').Checkout::generateUrlForStep('complete', $collection);
 
         if ($timestamp) {
-            Url::addQueryString('timestamp='.$timestamp->getTimestamp(), $returnUrl);
+            $returnUrl = Url::addQueryString('timestamp='.$timestamp, $returnUrl);
         }
 
         $merchant = new Merchant(
