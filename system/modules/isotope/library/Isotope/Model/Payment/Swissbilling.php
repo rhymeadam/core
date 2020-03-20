@@ -50,11 +50,13 @@ class Swissbilling extends Payment
     {
         $cart = Isotope::getCart();
 
-        if (null === $cart
-            || (!$this->swissbilling_b2b
-                && $cart->hasShipping()
-                && $cart->getBillingAddress()->id !== $cart->getShippingAddress()->id
-            )
+        if (null === $cart) {
+            return false;
+        }
+
+        if ($cart->hasShipping()
+            && $cart->getBillingAddress()->id !== $cart->getShippingAddress()->id
+            && (!$this->swissbilling_b2b || !$cart->getBillingAddress()->company)
         ) {
             return false;
         }
