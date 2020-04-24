@@ -588,7 +588,7 @@
         <source>Enable B2B support</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.swissbilling_b2b.1">
-        <source>SwissBilling by default does not allow a shipping address that is different than the billing address. Please check with SwissBilling before activating this option.</source>
+        <source>Enable B2B support for SwissBilling payments. Please check with SwissBilling before activating this option.</source>
       </trans-unit>
       <trans-unit id="tl_iso_payment.groups.0">
         <source>Member groups</source>

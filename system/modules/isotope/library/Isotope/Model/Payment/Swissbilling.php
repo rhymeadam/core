@@ -56,7 +56,6 @@ class Swissbilling extends Payment
 
         if ($cart->hasShipping()
             && $cart->getBillingAddress()->id !== $cart->getShippingAddress()->id
-            && (!$this->swissbilling_b2b || !$cart->getBillingAddress()->company)
         ) {
             return false;
         }
@@ -195,7 +194,7 @@ class Swissbilling extends Payment
         }
 
         $transaction = new Transaction();
-        $transaction->is_B2B = (bool) $this->swissbilling_b2b;
+        $transaction->is_B2B = (bool) $this->swissbilling_b2b && !empty($collection->getBillingAddress()->company);
         $transaction->eshop_ID = $collection->getStoreId();
         $transaction->eshop_ref = $collection->getId();
         $transaction->order_timestamp = new DateTime(new \DateTime());
@@ -236,23 +235,6 @@ class Swissbilling extends Payment
 
         if ($member = $collection->getMember()) {
             $debtor->user_ID = $member->id;
-        }
-
-        if (!$this->swissbilling_b2b) {
-            return $debtor;
-        }
-
-        $shippingAddress = $collection->getShippingAddress();
-
-        if ($shippingAddress instanceof Address) {
-            $debtor->deliv_company_name = $shippingAddress->company;
-            $debtor->deliv_firstname = $shippingAddress->firstname;
-            $debtor->deliv_lastname = $shippingAddress->lastname;
-            $debtor->deliv_adr1 = $shippingAddress->street_1;
-            $debtor->deliv_adr2 = $shippingAddress->street_2;
-            $debtor->deliv_city = $shippingAddress->city;
-            $debtor->deliv_zip = $shippingAddress->postal;
-            $debtor->deliv_country = 'CH';
         }
 
         return $debtor;
